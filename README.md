@@ -1,265 +1,227 @@
 # FinPay Fraud CDC Pipeline
 
-> **Real-time fraud detection feature platform** built with CDC (Change Data Capture), RisingWave streaming SQL, and dbt.
+> *A real-time fraud detection feature platform — because catching a stolen card in 200ms matters more than explaining it in 200 seconds.*
 
-## Project Story
+![Python](https://img.shields.io/badge/Python-3.11-blue)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-blue)
+![Kafka](https://img.shields.io/badge/Apache_Kafka-3.8-orange)
+![Debezium](https://img.shields.io/badge/Debezium-2.7-red)
+![RisingWave](https://img.shields.io/badge/RisingWave-3.0-green)
+![dbt](https://img.shields.io/badge/dbt-1.8-orange)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
-FinPay processes 50K+ transactions/day. The fraud team needs **sub-minute visibility** into suspicious patterns (velocity attacks, impossible travel, geo anomalies) but the OLTP Postgres can't serve analytical queries without locking up checkout.
+---
 
-**Solution:** Built a **CDC → Streaming SQL → Feature Store** pipeline:
-- **Debezium** captures every transaction insert/update from Postgres → Kafka (<10s latency)
-- **RisingWave** creates real-time materialized views for fraud features (velocity, geo, device, merchant risk)
-- **dbt** models transform raw CDC → enriched fraud features with data quality tests
-- **FastAPI** serves features at <50ms for real-time ML scoring
+## The Problem
 
-> **ML Integration:** The 25+ features served by the API (velocity, device reputation, merchant risk, composite score) are designed to feed an XGBoost/LightGBM fraud classifier. The `composite_risk_score` is a rule-based baseline; a trained ML model would replace this with learned feature weights.
+Payment companies process millions of transactions, but their fraud detection runs on batch queries against the same OLTP database handling checkout. Running `COUNT(*)` over the last 7 days on a busy `transactions` table locks rows, blocks writes, and takes minutes — by the time the fraud team sees the pattern, the money is gone.
+
+The fraud team needs **sub-minute visibility** into suspicious patterns (velocity attacks, impossible travel, device anomalies) — but the database that stores transactions can't serve analytical queries without killing production performance.
+
+---
+
+## What FinPay Does
+
+FinPay sits between the payment database and the fraud team. Every transaction is captured via CDC, streamed through Kafka, and materialized into real-time feature views — all without touching the production database.
+
+```
+FinPay OLTP       Debezium        Kafka         RisingWave        Fraud API
+Postgres    ──→   CDC        ──→   Topics   ──→   MVs + Features ──→  FastAPI
+(write-path)      (<10s)          (durable)      (real-time)        (<5ms)
+```
+
+**The 4 feature categories:**
+
+| Category | What it catches |
+|---|---|
+| **Velocity** | Unusual transaction frequency (7d/30d rolling windows) |
+| **Device Risk** | New devices, untrusted fingerprints, shared device abuse |
+| **Merchant Risk** | High refund/decline rates, suspicious merchant categories |
+| **Composite Score** | Weighted 0-100 risk score combining all signals |
+
+Every transaction gets a `risk_tier` (low / high / critical) in real-time. The FastAPI feature store serves these at query time for ML scoring or rule-based blocking.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────────┐     ┌──────────────────────┐
-│  FinPay     │     │   Debezium  │     │   Apache Kafka  │     │     RisingWave       │
-│  Postgres   │────▶│   Connect   │────▶│  (CDC Topics)   │────▶│  Streaming SQL       │
-│  (OLTP)     │     │  (2.7)      │     │  (KRaft mode)   │     │  Materialized Views  │
-└─────────────┘     └─────────────┘     └─────────────────┘     └──────────┬───────────┘
-                                                                           │
-                                                            ┌──────────────┴───────────┐
-                                                            │                          │
-                                                            ▼                          ▼
-                                                   ┌──────────────┐          ┌──────────────────┐
-                                                   │   dbt Models │          │  FastAPI Feature  │
-                                                   │  (ephemeral) │          │  Store API        │
-                                                   │  24 tests    │          │  <50ms p99        │
-                                                   └──────────────┘          └──────────────────┘
+Source Layer         CDC Layer           Stream Layer         Feature Layer        Serving Layer
+───────────          ─────────           ────────────         ─────────────        ─────────────
+PostgreSQL    ──→    Debezium      ──→   Kafka          ──→   RisingWave     ──→   FastAPI
+(OLTP, 50K/day)      (log-based)         (KRaft, durable)     (materialized MVs)   (feature API)
+                                                                │
+                                                                ├── silver_transactions_enriched
+                                                                ├── mv_user_velocity_7d
+                                                                ├── mv_user_velocity_30d
+                                                                ├── mv_merchant_risk_realtime
+                                                                ├── mv_device_risk_realtime
+                                                                └── mv_transaction_risk_score
 ```
+
+**Orchestration:** Apache Airflow (Docker Compose)
+- `finpay_cdc_bootstrap` — One-time setup: schema, Debezium, RisingWave DDL
+- `finpay_cdc_monitor` — Every 5 min: CDC lag, data freshness, schema drift
+- `finpay_dbt_daily` — Daily: incremental dbt run + test suite
+
+**Storage:** MinIO (S3-compatible) for future Iceberg integration
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology | Why |
-|-------|------------|-----|
-| **CDC** | Debezium 2.7 | Log-based, exactly-once, schema evolution |
-| **Message Bus** | Apache Kafka 3.8 (KRaft) | Durable, ordered, replayable |
-| **Streaming SQL** | RisingWave 3.0 | PostgreSQL-compatible, real-time materialized views |
-| **Transform** | dbt 1.8 + dbt-postgres | Modular SQL, testing, documentation |
-| **Orchestration** | Apache Airflow | DAGs for bootstrap, daily runs, monitoring |
-| **Feature Serving** | FastAPI | <50ms p99, PostgreSQL wire protocol |
-| **Source DB** | PostgreSQL 15 | OLTP with CDC publication |
-| **Object Storage** | MinIO | S3-compatible, bucket setup for Iceberg |
+| Layer | Tool | Cloud equivalent |
+|---|---|---|
+| Source database | PostgreSQL 15 | RDS / Cloud SQL |
+| CDC | Debezium 2.7 (Kafka Connect) | AWS DMS / Debezium on MSK |
+| Message bus | Apache Kafka 3.8 (KRaft) | MSK / Confluent Cloud |
+| Streaming SQL | RisingWave 3.0 | Apache Flink / Spark Structured Streaming |
+| Transformation | dbt Core 1.8 + dbt-postgres | dbt Cloud |
+| Orchestration | Apache Airflow (Docker) | Cloud Composer / MWAA |
+| Feature serving | FastAPI | AWS API Gateway + Lambda |
+| Object storage | MinIO | AWS S3 / GCS |
 
 ---
 
-## Quick Start
+## Key Engineering Decisions
 
-### Prerequisites
-- Docker Desktop with 8GB+ RAM
-- Git
-- Python 3.11 (for local dbt)
+**Why RisingWave instead of Apache Flink?**
+Flink requires Java/Scala, a JobManager + TaskManager cluster, and manual state backend tuning. RisingWave is a single binary with a PostgreSQL wire protocol — connect with `psql`, define materialized views in SQL, get real-time incremental updates. For a team that thinks in SQL, RisingWave is the pragmatic choice.
 
-### 1. Clone & Start Infrastructure
+**Why CDC instead of trigger-based or batch?**
+Database triggers add write latency and are fragile during schema changes. Batch ETL ( hourly/daily) is too slow for fraud detection. Log-based CDC via Debezium captures every insert/update/delete with <10s latency, zero impact on the source database, and automatic schema evolution.
+
+**Why ephemeral dbt models instead of views?**
+RisingWave doesn't support `CREATE OR REPLACE VIEW` or temporary tables. Ephemeral models compile as CTEs — they're tested by dbt but the actual data lives in RisingWave materialized views. dbt serves as the testing and documentation layer, not the runtime.
+
+**Why composite risk score as weighted formula instead of ML?**
+The rule-based `composite_risk_score` is a baseline that works without training data. It's transparent — the fraud team can see exactly why a transaction was flagged. A trained XGBoost model would replace the hardcoded weights with learned feature importance, but the feature pipeline stays the same.
+
+---
+
+## Pipeline Results
+
+| Metric | Value |
+|---|---|
+| Synthetic transactions | 50,000 |
+| CDC sources captured | 6 (users, accounts, merchants, locations, devices, transactions) |
+| Silver materialized views | 4 (enriched transactions, user profile, merchant profile, device reputation) |
+| Gold materialized views | 5 (velocity 7d/30d, merchant risk, device risk, composite score) |
+| dbt models | 11 (4 staging + 3 intermediate + 4 marts) |
+| dbt tests | 24 (all passing) |
+| Feature API endpoints | 7 (health, stats, user features, transaction features, batch, high-risk, metrics) |
+| Risk tiers | 3 (low / high / critical) |
+| Monthly infrastructure cost | ₹0 |
+
+---
+
+## Running Locally
+
+**Prerequisites:** Docker Desktop (8GB+ RAM), Python 3.11, Git
+
 ```bash
+# 1. Clone and setup
 git clone https://github.com/raitoncomeback/finpay-fraud-cdc.git
 cd finpay-fraud-cdc
-
-# Start all services (Postgres, Kafka, MinIO, RisingWave, Airflow, Debezium)
-docker-compose up -d
-
-# Verify all containers are running
-docker ps --format "table {{.Names}}\t{{.Status}}" | findstr finpay
-```
-
-### 2. Generate Synthetic Data
-```bash
-# Install Python dependencies
 pip install -r requirements.txt
 
-# Generate 50K transactions with embedded fraud patterns
-python scripts/generate_finpay_data.py --transactions 50000
-```
+# 2. Start all services (Postgres, Kafka, MinIO, RisingWave, Airflow, Debezium)
+docker-compose up -d
 
-### 3. Register Debezium Connector
-```bash
-# Copy registration script to container and run
+# 3. Initialize database and generate 50K transactions
+python scripts/generate_finpay_data.py --transactions 50000
+
+# 4. Register Debezium connector
 docker cp scripts/register_debezium.sh finpay-debezium:/tmp/
 docker exec finpay-debezium bash /tmp/register_debezium.sh
 
-# Verify in Kafka UI: http://localhost:8090
-```
-
-### 4. Create RisingWave Sources & Materialized Views
-```powershell
-# Run bronze DDL (Kafka sources)
+# 5. Create RisingWave sources and materialized views
 Get-Content risingwave/ddl_bronze.sql | docker run --rm -i --network finpay-fraud-cdc_datagate-net postgres:15-alpine psql -h risingwave -p 4566 -d dev -U root
-
-# Run silver DDL (enriched materialized views)
 Get-Content risingwave/ddl_silver.sql | docker run --rm -i --network finpay-fraud-cdc_datagate-net postgres:15-alpine psql -h risingwave -p 4566 -d dev -U root
-
-# Run gold DDL (fraud feature materialized views)
 Get-Content risingwave/ddl_gold.sql | docker run --rm -i --network finpay-fraud-cdc_datagate-net postgres:15-alpine psql -h risingwave -p 4566 -d dev -U root
-```
 
-### 5. Run dbt Transformations
-```bash
-cd dbt_finpay
-dbt deps
-dbt run
-dbt test
-```
+# 6. Run dbt transformations
+cd dbt_finpay && dbt deps && dbt run && dbt test
 
-### 6. Verify Everything Works
-```powershell
-# Check RisingWave data
-docker run --rm --network finpay-fraud-cdc_datagate-net postgres:15-alpine psql -h risingwave -p 4566 -d dev -U root -c "SELECT 'txns' AS tbl, COUNT(*) FROM silver_transactions_enriched UNION ALL SELECT 'users', COUNT(*) FROM silver_user_profile UNION ALL SELECT 'risk_scores', COUNT(*) FROM mv_transaction_risk_score;"
-
-# Check Fraud API
-(Invoke-WebRequest -Uri http://localhost:8001/health -UseBasicParsing).Content
+# 7. Start the feature API
+uvicorn fraud_features.api:app --host 0.0.0.0 --port 8001
+# Open http://localhost:8001/docs
 ```
 
 ---
 
-## Web UIs
+## Testing
 
-| Service | URL | Credentials |
-|---------|-----|-------------|
-| **Kafka UI** | http://localhost:8090 | - |
-| **MinIO Console** | http://localhost:9001 | `datagate` / `datagate123` |
-| **Airflow** | http://localhost:8080 | `admin` / `admin` |
-| **Fraud API Docs** | http://localhost:8001/docs | - |
-| **Fraud API Health** | http://localhost:8001/health | - |
-
----
-
-## Data Layers
-
-### Silver Layer (RisingWave Materialized Views)
-- `silver_transactions_enriched` - Transactions joined with users, merchants, locations, devices
-- `silver_user_profile` - User profiles with risk tier and account summary
-- `silver_merchant_profile` - Merchant profiles with risk level
-- `silver_device_reputation` - Device reputation scores
-
-### Gold Layer (Real-Time Fraud Features)
-- `mv_user_velocity_7d` - 7-day rolling transaction velocity per user
-- `mv_user_velocity_30d` - 30-day velocity per user (real-time alerts)
-- `mv_merchant_risk_realtime` - Merchant refund/decline rates (30-day window)
-- `mv_device_risk_realtime` - Device risk scoring
-- `mv_transaction_risk_score` - Composite risk score (0-100) per transaction
-
-### Fraud Features (FastAPI)
-| Endpoint | Description |
-|----------|-------------|
-| `GET /features/user/{user_id}` | User-level fraud features |
-| `GET /features/transaction/{id}` | Transaction risk score |
-| `POST /features/batch` | Batch user features (up to 1000) |
-| `GET /features/high-risk` | Recent high-risk transactions |
-| `GET /stats` | Risk distribution stats |
-
----
-
-## Project Structure
-
-```
-finpay-fraud-cdc/
-├── docker-compose.yml              # Full local stack (12 services)
-├── risingwave/
-│   ├── ddl_bronze.sql              # Kafka sources (6 tables)
-│   ├── ddl_silver.sql              # Enriched MVs (4 views)
-│   ├── ddl_gold.sql                # Fraud feature MVs (5 views)
-│   └── risingwave.toml             # Compactor memory config
-├── dbt_finpay/
-│   ├── dbt_project.yml
-│   ├── profiles.yml                # PostgreSQL adapter → RisingWave
-│   └── models/
-│       ├── staging/                # Source mappings + schema tests
-│       ├── intermediate/           # Velocity, merchant risk, device reputation
-│       └── marts/                  # Gold layer fraud features
-├── fraud_features/
-│   ├── api.py                      # FastAPI feature serving
-│   ├── Dockerfile
-│   └── requirements.txt
-├── scripts/
-│   ├── init_finpay.sql             # Postgres schema + CDC publication
-│   ├── generate_finpay_data.py     # 50K synthetic transactions
-│   └── register_debezium.sh        # Debezium connector registration
-├── airflow/dags/
-│   ├── finpay_cdc_bootstrap.py     # One-time setup DAG
-│   ├── finpay_cdc_monitor.py       # 5-min monitoring
-│   └── finpay_dbt_daily.py         # Daily dbt run
-├── .github/workflows/
-│   └── ci-cd.yml                   # CI/CD pipeline
-├── Makefile
-└── README.md
-```
-
----
-
-## Why RisingWave over Flink/Spark
-
-| Criteria | RisingWave | Apache Flink | Spark Structured Streaming |
-|----------|-----------|--------------|---------------------------|
-| **Learning curve** | SQL-only (PG wire protocol) | Java/Scala + SQL | Scala + SQL |
-| **State backend** | Managed internally | Manual tuning (RocksDB) | Manual tuning |
-| **Materialized views** | Built-in, incremental | Requires Flink SQL + catalog | Micro-batch only |
-| **Deployment** | Single binary | JobManager + TaskManager | Spark cluster |
-| **Latency** | Sub-second | Sub-second | Micro-batch (seconds) |
-
-RisingWave was chosen for its simplicity: connect with any PostgreSQL client, define materialized views in SQL, and get real-time incremental updates without managing state or clusters.
-
----
-
-## SQL Walkthrough: Key Window Functions
-
-### Velocity Score (`ddl_gold.sql`)
-```sql
--- 7-day rolling transaction count per user
-COUNT(*) OVER (
-    PARTITION BY user_id
-    ORDER BY initiated_at
-    RANGE BETWEEN INTERVAL '7 days' PRECEDING AND CURRENT ROW
-) AS txn_count_7d
-```
-This counts all transactions per user within a 7-day sliding window, updating in real-time as new transactions arrive.
-
-### Composite Risk Score (`ddl_gold.sql`)
-```sql
-LEAST(100,
-    COALESCE(txn_count_30d, 0) * 2 +           -- velocity weight
-    COALESCE(refund_rate_30d, 0) * 50 +         -- refund fraud signal
-    COALESCE(decline_rate_30d, 0) * 30 +        -- decline fraud signal
-    COALESCE(device_risk_score, 10) / 2 +       -- device trust
-    COALESCE(user_risk_score, 0) / 2 +          -- user history
-    CASE WHEN amount > 5000 THEN 10 ELSE 0 END + -- high amount
-    CASE WHEN NOT card_present THEN 5 ELSE 0 END -- card-not-present
-) AS composite_risk_score
-```
-Weighted formula combining velocity, merchant risk, device trust, and user profile into a 0-100 score.
-
----
-
-## dbt Tests (24 Tests)
+**dbt tests (24/24 passing):**
 
 | Test Type | Count | What It Catches |
-|-----------|-------|-----------------|
+|---|---|---|
 | `accepted_values` | 4 | Invalid enum values (risk_tier, txn_status, kyc_status, risk_level) |
 | `not_null` | 12 | Missing primary keys and required fields |
 | `unique` | 8 | Duplicate records in dimension tables |
 
-### Debugging Failures
-1. Run `dbt test` to see which test fails
-2. Check the compiled SQL in `target/` for the failing test
-3. Query the source table to inspect the bad data
-4. Fix in staging model or source data, re-run
+**Running tests:**
+```bash
+cd dbt_finpay
+dbt test
+# Completed successfully — PASS=24 WARN=0 ERROR=0 SKIP=0 TOTAL=24
+```
 
 ---
 
-## Results
+## What the API Looks Like
 
-See [RESULTS.md](RESULTS.md) for actual output: risk tier distribution, top flagged transactions, velocity users, API responses, and dbt test results.
+The FastAPI feature store serves fraud features at query time:
+
+```
+GET /features/user/{user_id}
+```
+```json
+{
+  "user_id": "2c67caf3-5b69-4e2b-9167-e0aa54a037d8",
+  "txn_count_7d": 97,
+  "amount_sum_7d": 235441.25,
+  "unique_devices_7d": 2,
+  "unique_merchants_7d": 90,
+  "risk_score": 15,
+  "risk_tier": "verified"
+}
+```
+
+```
+GET /features/high-risk?limit=3
+```
+```json
+{
+  "transactions": [
+    {
+      "transaction_id": "cb9e28b9-2ef3-43f9-926d-53cf1ffe5ab9",
+      "amount": 8629.62,
+      "composite_risk_score": 100.0,
+      "risk_tier": "critical",
+      "decline_rate_30d": 0.04
+    }
+  ]
+}
+```
+
+See [RESULTS.md](RESULTS.md) for full pipeline output: risk tier distribution, top flagged transactions, velocity users, and API response times.
 
 ---
 
-## License
+## Deliberate Design Choices Worth Noting
 
-MIT License
+**CDC captures deletes, not just inserts.** A fraudster's account being deactivated is as important as a new account being created. Debezium with `REPLICA IDENTITY FULL` captures the full before/after state of every change.
+
+**The composite score is explainable by design.** Each weight is a named constant in the SQL — the fraud team can trace exactly why a transaction scored 100 instead of 60. Black-box ML models are great for accuracy; rule-based scores are great for compliance.
+
+**RisingWave MVs update incrementally, not on batch.** When a new transaction hits Kafka, only the affected rows in the velocity and risk MVs are recomputed — not the full 50K row scan. This is the difference between "real-time" and "near-real-time."
+
+**dbt tests run against RisingWave, not a separate test database.** The PostgreSQL wire protocol means dbt sees the same schema, same data, same constraints. Tests catch issues that mock-based testing would miss.
+
+---
+
+## Author
+
+Built by [@raitoncomeback](https://github.com/raitoncomeback)
