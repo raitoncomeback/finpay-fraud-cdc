@@ -210,6 +210,25 @@ See [RESULTS.md](RESULTS.md) for full pipeline output: risk tier distribution, t
 
 ---
 
+## Screenshots
+
+### FastAPI Swagger UI
+![API Docs](docs/images/api-docs.png)
+
+### Kafka UI — CDC Topics
+![Kafka UI](docs/images/kafka-ui.png)
+
+### RisingWave Materialized Views
+![RisingWave Data](docs/images/risingwave-data.png)
+
+### dbt Tests — 24/24 Passing
+![dbt Tests](docs/images/dbt-tests.png)
+
+### Airflow DAGs
+![Airflow](docs/images/airflow-dags.png)
+
+---
+
 ## Deliberate Design Choices Worth Noting
 
 **CDC captures deletes, not just inserts.** A fraudster's account being deactivated is as important as a new account being created. Debezium with `REPLICA IDENTITY FULL` captures the full before/after state of every change.
