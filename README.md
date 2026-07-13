@@ -59,7 +59,7 @@ FinPay processes 50K+ transactions/day. The fraud team needs **sub-minute visibi
 
 ### 1. Clone & Start Infrastructure
 ```bash
-git clone https://github.com/yourusername/finpay-fraud-cdc.git
+git clone https://github.com/raitoncomeback/finpay-fraud-cdc.git
 cd finpay-fraud-cdc
 
 # Start all services (Postgres, Kafka, MinIO, RisingWave, Airflow, Debezium)
@@ -140,8 +140,8 @@ docker run --rm --network finpay-fraud-cdc_datagate-net postgres:15-alpine psql 
 
 ### Gold Layer (Real-Time Fraud Features)
 - `mv_user_velocity_7d` - 7-day rolling transaction velocity per user
-- `mv_user_velocity_1h` - 1-hour rolling velocity (real-time alerts)
-- `mv_merchant_risk_realtime` - Merchant refund/decline rates (1h window)
+- `mv_user_velocity_1h` - 30-day velocity (real-time alerts)
+- `mv_merchant_risk_realtime` - Merchant refund/decline rates (30-day window)
 - `mv_device_risk_realtime` - Device risk scoring
 - `mv_transaction_risk_score` - Composite risk score (0-100) per transaction
 
@@ -190,6 +190,71 @@ finpay-fraud-cdc/
 ├── Makefile
 └── README.md
 ```
+
+---
+
+## Why RisingWave over Flink/Spark
+
+| Criteria | RisingWave | Apache Flink | Spark Structured Streaming |
+|----------|-----------|--------------|---------------------------|
+| **Learning curve** | SQL-only (PG wire protocol) | Java/Scala + SQL | Scala + SQL |
+| **State backend** | Managed internally | Manual tuning (RocksDB) | Manual tuning |
+| **Materialized views** | Built-in, incremental | Requires Flink SQL + catalog | Micro-batch only |
+| **Deployment** | Single binary | JobManager + TaskManager | Spark cluster |
+| **Latency** | Sub-second | Sub-second | Micro-batch (seconds) |
+
+RisingWave was chosen for its simplicity: connect with any PostgreSQL client, define materialized views in SQL, and get real-time incremental updates without managing state or clusters.
+
+---
+
+## SQL Walkthrough: Key Window Functions
+
+### Velocity Score (`ddl_gold.sql`)
+```sql
+-- 7-day rolling transaction count per user
+COUNT(*) OVER (
+    PARTITION BY user_id
+    ORDER BY initiated_at
+    RANGE BETWEEN INTERVAL '7 days' PRECEDING AND CURRENT ROW
+) AS txn_count_7d
+```
+This counts all transactions per user within a 7-day sliding window, updating in real-time as new transactions arrive.
+
+### Composite Risk Score (`ddl_gold.sql`)
+```sql
+LEAST(100,
+    COALESCE(txn_count_30d, 0) * 2 +           -- velocity weight
+    COALESCE(refund_rate_30d, 0) * 50 +         -- refund fraud signal
+    COALESCE(decline_rate_30d, 0) * 30 +        -- decline fraud signal
+    COALESCE(device_risk_score, 10) / 2 +       -- device trust
+    COALESCE(user_risk_score, 0) / 2 +          -- user history
+    CASE WHEN amount > 5000 THEN 10 ELSE 0 END + -- high amount
+    CASE WHEN NOT card_present THEN 5 ELSE 0 END -- card-not-present
+) AS composite_risk_score
+```
+Weighted formula combining velocity, merchant risk, device trust, and user profile into a 0-100 score.
+
+---
+
+## dbt Tests (24 Tests)
+
+| Test Type | Count | What It Catches |
+|-----------|-------|-----------------|
+| `accepted_values` | 4 | Invalid enum values (risk_tier, txn_status, kyc_status, risk_level) |
+| `not_null` | 12 | Missing primary keys and required fields |
+| `unique` | 8 | Duplicate records in dimension tables |
+
+### Debugging Failures
+1. Run `dbt test` to see which test fails
+2. Check the compiled SQL in `target/` for the failing test
+3. Query the source table to inspect the bad data
+4. Fix in staging model or source data, re-run
+
+---
+
+## Results
+
+See [RESULTS.md](RESULTS.md) for actual output: risk tier distribution, top flagged transactions, velocity users, API responses, and dbt test results.
 
 ---
 
