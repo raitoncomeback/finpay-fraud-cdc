@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# dbt
+dbt_finpay/target/
+dbt_finpay/dbt_packages/
+dbt_finpay/logs/
+dbt_finpay/.user.yml
+
+# Docker volumes (local data)
+postgres-data/
+minio-data/
+finpay-pg-data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment variables
+.env
+.env.local
+
+# Logs
+*.log
+
+# Temp files
+tmp/

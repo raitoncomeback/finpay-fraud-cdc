@@ -1,0 +1,280 @@
+name: FinPay Fraud CDC Pipeline CI/CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'finpay-fraud-cdc/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'finpay-fraud-cdc/**'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'test'
+        type: choice
+        options:
+          - test
+          - lint
+          - deploy
+
+env:
+  PROJECT_DIR: finpay-fraud-cdc
+  DOCKER_COMPOSE_FILE: docker-compose.yml
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install linting tools
+        run: |
+          pip install black isort flake8 mypy
+      
+      - name: Run black
+        run: |
+          cd ${{ env.PROJECT_DIR }}
+          black --check --diff .
+      
+      - name: Run isort
+        run: |
+          cd ${{ env.PROJECT_DIR }}
+          isort --check-only --diff .
+      
+      - name: Run flake8
+        run: |
+          cd ${{ env.PROJECT_DIR }}
+          flake8 . --max-line-length=100 --ignore=E203,W503
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          cd ${{ env.PROJECT_DIR }}
+          pip install -r requirements.txt
+          pip install pytest pytest-cov pytest-mock
+      
+      - name: Run unit tests
+        run: |
+          cd ${{ env.PROJECT_DIR }}
+          python -m pytest tests/ -v --cov=src --cov-report=xml
+      
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage.xml
+          flags: unittests
+
+  schema-check:
+    name: Schema Compatibility Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Start schema registry
+        run: |
+          docker run -d --name schema-registry \
+            -p 8081:8081 \
+            -e SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS=PLAINTEXT://kafka:29092 \
+            -e SCHEMA_REGISTRY_HOST_NAME=schema-registry \
+            -e SCHEMA_REGISTRY_LISTENERS=http://0.0.0.0:8081 \
+            confluentinc/cp-schema-registry:7.5.0
+      
+      - name: Wait for schema registry
+        run: |
+          for i in {1..30}; do
+            if curl -s http://localhost:8081/subjects > /dev/null; then
+              echo "Schema registry ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Schema registry failed to start"
+          exit 1
+      
+      - name: Validate Avro schemas
+        run: |
+          cd ${{ env.PROJECT_DIR }}
+          # Install schema registry client
+          pip install confluent-kafka
+          
+          # Register schemas and check compatibility
+          python scripts/validate_schemas.py
+
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: finpay
+          POSTGRES_PASSWORD: finpay123
+          POSTGRES_DB: finpay
+        ports: ['5433:5432']
+        options: >-
+          --health-cmd "pg_isready -U finpay"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      
+      kafka:
+        image: apache/kafka:3.8.0
+        env:
+          KAFKA_NODE_ID: 1
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+          KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+        ports: ['9092:9092']
+        options: >-
+          --health-cmd "kafka-topics.sh --bootstrap-server localhost:9092 --list"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 5
+      
+      minio:
+        image: minio/minio:latest
+        command: server /data --console-address ":9001"
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports: ['9000:9000', '9001:9001']
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          cd ${{ env.PROJECT_DIR }}
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+      
+      - name: Initialize database
+        run: |
+          cd ${{ env.PROJECT_DIR }}
+          psql -h localhost -p 5433 -U finpay -d finpay -f scripts/init_finpay.sql
+      
+      - name: Generate synthetic data
+        run: |
+          cd ${{ env.PROJECT_DIR }}
+          python scripts/generate_finpay_data.py --transactions 1000
+      
+      - name: Run integration tests
+        run: |
+          cd ${{ env.PROJECT_DIR }}
+          python -m pytest tests/integration/ -v
+
+  build:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [lint, test, schema-check]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build fraud-api image
+        run: |
+          cd ${{ env.PROJECT_DIR }}/fraud_features
+          docker build -t finpay-fraud-api:${{ github.sha }} .
+          docker save finpay-fraud-api:${{ github.sha }} | gzip > fraud-api-${{ github.sha }}.tar.gz
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-images
+          path: ${{ env.PROJECT_DIR }}/fraud_features/*.tar.gz
+
+  deploy:
+    name: Deploy to Local/Staging
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Deploy with Docker Compose
+        run: |
+          cd ${{ env.PROJECT_DIR }}
+          # For local deployment, just restart services
+          docker-compose -f ${{ env.DOCKER_COMPOSE_FILE }} pull
+          docker-compose -f ${{ env.DOCKER_COMPOSE_FILE }} up -d --remove-orphans
+          
+          # Wait for services
+          sleep 30
+          
+          # Register Debezium connector
+          ./scripts/register_debezium.sh
+          
+          # Run RisingWave DDL
+          docker exec finpay-risingwave psql -h localhost -p 4566 -U root -d dev -f /risingwave/ddl_bronze.sql
+          docker exec finpay-risingwave psql -h localhost -p 4566 -U root -d dev -f /risingwave/ddl_silver.sql
+          docker exec finpay-risingwave psql -h localhost -p 4566 -U root -d dev -f /risingwave/ddl_gold.sql
+          
+          # Run dbt
+          docker run --rm \
+            --network datagate-net \
+            -v $(pwd)/dbt_finpay:/opt/dbt_finpay \
+            ghcr.io/dbt-labs/dbt-core:1.8 \
+            run --project-dir /opt/dbt_finpay --profiles-dir /opt/dbt_finpay
+      
+      - name: Health check
+        run: |
+          cd ${{ env.PROJECT_DIR }}
+          ./scripts/health_check.sh
+
+  notify:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: [lint, test, schema-check, integration-test, build, deploy]
+    if: failure()
+    steps:
+      - name: Send failure notification
+        run: |
+          echo "Pipeline failed! Check GitHub Actions for details."
+          # Add Slack/Email notification here

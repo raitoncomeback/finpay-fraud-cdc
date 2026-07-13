@@ -1,0 +1,95 @@
+version: 2
+
+models:
+  - name: stg_transactions
+    description: "Enriched transactions from RisingWave silver layer"
+    columns:
+      - name: transaction_id
+        description: "Unique transaction identifier"
+        tests:
+          - unique
+          - not_null
+      - name: user_id
+        tests:
+          - not_null
+      - name: amount
+        tests:
+          - not_null
+      - name: initiated_at
+        tests:
+          - not_null
+      - name: txn_status
+        tests:
+          - accepted_values:
+              values: ['pending', 'authorized', 'settled', 'declined', 'reversed', 'failed']
+
+  - name: stg_users
+    description: "User profiles from RisingWave"
+    columns:
+      - name: user_id
+        tests:
+          - unique
+          - not_null
+      - name: email
+        tests:
+          - not_null
+      - name: kyc_status
+        tests:
+          - accepted_values:
+              values: ['pending', 'verified', 'rejected']
+
+  - name: stg_merchants
+    description: "Merchant profiles from RisingWave"
+    columns:
+      - name: merchant_id
+        tests:
+          - unique
+          - not_null
+      - name: risk_level
+        tests:
+          - accepted_values:
+              values: ['low', 'medium', 'high', 'critical']
+
+  - name: stg_devices
+    description: "Device reputation from RisingWave"
+    columns:
+      - name: device_id
+        tests:
+          - unique
+          - not_null
+
+  - name: gold_fraud_features
+    description: "Composite transaction risk scores from RisingWave"
+    columns:
+      - name: transaction_id
+        tests:
+          - unique
+          - not_null
+      - name: risk_tier
+        tests:
+          - accepted_values:
+              values: ['low', 'medium', 'high', 'critical']
+
+  - name: gold_user_fraud_features
+    description: "User-level fraud features for ML scoring"
+    columns:
+      - name: user_id
+        tests:
+          - unique
+          - not_null
+
+  - name: gold_merchant_risk_score
+    description: "Merchant risk scoring"
+    columns:
+      - name: merchant_id
+        tests:
+          - unique
+          - not_null
+
+  - name: gold_device_risk_score
+    description: "Device risk scoring"
+    columns:
+      - name: device_id
+        tests:
+          - unique
+          - not_null

@@ -1,0 +1,45 @@
+# FinPay Fraud CDC Pipeline - Python Dependencies
+# Core
+psycopg2-binary==2.9.9
+kafka-python-ng==2.2.2
+
+# Data Generation
+faker==24.6.0
+numpy==1.26.2
+pandas==2.1.4
+
+# dbt (using latest 1.8.x compatible with Python 3.11)
+dbt-core==1.8.7
+dbt-postgres==1.8.2
+dbt-iceberg==1.0.12
+
+# API
+fastapi==0.109.0
+uvicorn==0.27.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# Monitoring
+prometheus-client==0.19.0
+
+# Utilities
+python-dotenv==1.0.0
+pyyaml==6.0.1
+requests==2.31.0
+tenacity==8.2.3
+loguru==0.7.2
+
+# Testing
+pytest==7.4.3
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+pytest-asyncio==0.21.1
+
+# Linting
+black==23.11.0
+isort==5.12.0
+flake8==6.1.0
+mypy==1.7.1
+
+# Schema Registry
+confluent-kafka==2.5.0

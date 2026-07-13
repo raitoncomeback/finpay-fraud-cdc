@@ -1,0 +1,328 @@
+version: "3.8"
+
+services:
+  # ============================================================
+  # INFRASTRUCTURE
+  # ============================================================
+
+  # --- PostgreSQL for Airflow ---
+  postgres:
+    image: postgres:15-alpine
+    container_name: finpay-postgres-airflow
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - datagate-net
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # --- MinIO (S3-compatible object storage) ---
+  minio:
+    image: minio/minio:latest
+    container_name: finpay-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: datagate
+      MINIO_ROOT_PASSWORD: datagate123
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - datagate-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # --- MinIO bucket setup ---
+  minio-setup:
+    image: minio/mc:latest
+    container_name: finpay-minio-setup
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - datagate-net
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 datagate datagate123;
+      mc mb --ignore-existing local/bronze;
+      mc mb --ignore-existing local/bronze-verified;
+      mc mb --ignore-existing local/quarantine;
+      mc mb --ignore-existing local/enriched;
+      mc mb --ignore-existing local/cdc-bronze;
+      mc mb --ignore-existing local/cdc-silver;
+      mc mb --ignore-existing local/cdc-gold;
+      echo 'MinIO buckets created';
+      exit 0;
+      "
+    restart: "no"
+
+  # --- Kafka (KRaft mode, no Zookeeper) ---
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: finpay-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,INTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 24
+    ports:
+      - "9092:9092"
+    networks:
+      - datagate-net
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 30s
+      timeout: 30s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
+  # --- Kafka UI ---
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: finpay-kafka-ui
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: finpay
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    networks:
+      - datagate-net
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ============================================================
+  # AIRFLOW
+  # ============================================================
+
+  airflow-init:
+    image: apache/airflow:2.9.0
+    container_name: finpay-airflow-init
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./dbt_finpay:/opt/airflow/dbt_finpay
+      - ./scripts:/opt/airflow/scripts
+    networks:
+      - datagate-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate &&
+        airflow users create \
+          --username admin \
+          --firstname DataGate \
+          --lastname Admin \
+          --role Admin \
+          --email admin@datagate.local \
+          --password admin
+    restart: "no"
+
+  airflow-webserver:
+    image: apache/airflow:2.9.0
+    container_name: finpay-airflow-webserver
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW__WEBSERVER__SECRET_KEY: "finpay-local-secret"
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./dbt_finpay:/opt/airflow/dbt_finpay
+      - ./scripts:/opt/airflow/scripts
+    ports:
+      - "8080:8080"
+    networks:
+      - datagate-net
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.0
+    container_name: finpay-airflow-scheduler
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./dbt_finpay:/opt/airflow/dbt_finpay
+      - ./scripts:/opt/airflow/scripts
+    networks:
+      - datagate-net
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ============================================================
+  # SOURCE OLTP DATABASE
+  # ============================================================
+
+  finpay-postgres:
+    image: postgres:15-alpine
+    container_name: finpay-postgres
+    environment:
+      POSTGRES_USER: finpay
+      POSTGRES_PASSWORD: finpay123
+      POSTGRES_DB: finpay
+    volumes:
+      - finpay-pg-data:/var/lib/postgresql/data
+      - ./scripts/init_finpay.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5433:5432"
+    networks:
+      - datagate-net
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "finpay"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ============================================================
+  # DEBEZIUM CONNECT
+  # ============================================================
+
+  debezium:
+    image: debezium/connect:2.7.0.Final
+    container_name: finpay-debezium
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: finpay-cdc-group
+      CONFIG_STORAGE_TOPIC: finpay.connect.configs
+      OFFSET_STORAGE_TOPIC: finpay.connect.offsets
+      STATUS_STORAGE_TOPIC: finpay.connect.statuses
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      TRANSFORMS: unwrap,addSource
+      TRANSFORMS.unwrap.type: io.debezium.transforms.ExtractNewRecordState
+      TRANSFORMS.unwrap.drop.tombstones: "true"
+      TRANSFORMS.unwrap.delete.handling.mode: "rewrite"
+      TRANSFORMS.addSource.type: org.apache.kafka.connect.transforms.InsertField$$Value
+      TRANSFORMS.addSource.static.field: cdc_source
+      TRANSFORMS.addSource.static.value: finpay-postgres
+    ports:
+      - "8083:8083"
+    networks:
+      - datagate-net
+    depends_on:
+      kafka:
+        condition: service_healthy
+      finpay-postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ============================================================
+  # RISINGWAVE (Streaming SQL)
+  # ============================================================
+
+  risingwave:
+    image: risingwavelabs/risingwave:latest
+    container_name: finpay-risingwave
+    command: ["single-node", "--config-path", "/risingwave-config/risingwave.toml"]
+    volumes:
+      - ./risingwave/risingwave.toml:/risingwave-config/risingwave.toml:ro
+    ports:
+      - "4566:4566"
+      - "5691:5691"
+    networks:
+      - datagate-net
+    depends_on:
+      - kafka
+      - minio
+    restart: unless-stopped
+
+  # ============================================================
+  # ICEBERG REST CATALOG
+  # ============================================================
+
+  iceberg-rest:
+    image: tabulario/iceberg-rest:1.5.0
+    container_name: finpay-iceberg-rest
+    environment:
+      CATALOG_WAREHOUSE: s3a://cdc-bronze/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      AWS_ACCESS_KEY_ID: datagate
+      AWS_SECRET_ACCESS_KEY: datagate123
+      AWS_ENDPOINT: http://minio:9000
+      AWS_REGION: us-east-1
+    ports:
+      - "8181:8181"
+    networks:
+      - datagate-net
+    depends_on:
+      - minio
+    restart: unless-stopped
+
+  # ============================================================
+  # FRAUD FEATURE API
+  # ============================================================
+
+  fraud-api:
+    build:
+      context: ./fraud_features
+      dockerfile: Dockerfile
+    container_name: finpay-fraud-api
+    ports:
+      - "8001:8000"
+    environment:
+      RISINGWAVE_HOST: risingwave
+      RISINGWAVE_PORT: 4566
+      RISINGWAVE_DATABASE: dev
+      RISINGWAVE_USER: root
+      RISINGWAVE_PASSWORD: ""
+    networks:
+      - datagate-net
+    depends_on:
+      - risingwave
+    restart: unless-stopped
+
+networks:
+  datagate-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  minio-data:
+  finpay-pg-data:

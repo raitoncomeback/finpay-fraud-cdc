@@ -1,0 +1,15 @@
+# FinPay dbt Profile - connects to RisingWave via PostgreSQL wire protocol
+
+finpay_fraud:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: localhost
+      port: 4566
+      user: root
+      password: ""
+      dbname: dev
+      schema: dbt_finpay
+      threads: 4
+      connect_timeout: 10

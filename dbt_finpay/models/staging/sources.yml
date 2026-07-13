@@ -1,0 +1,120 @@
+version: 2
+
+sources:
+  - name: risingwave
+    description: "RisingWave materialized views - real-time CDC streaming layer"
+    schema: public
+    tables:
+      - name: silver_transactions_enriched
+        description: "Enriched transactions with user, merchant, location, and device data"
+        columns:
+          - name: transaction_id
+            description: "Unique transaction identifier"
+          - name: user_id
+          - name: merchant_id
+          - name: device_id
+          - name: amount
+          - name: currency
+          - name: txn_type
+          - name: txn_status
+          - name: entry_mode
+          - name: card_present
+          - name: is_3ds
+          - name: is_tokenized
+          - name: initiated_at
+          - name: authorized_at
+          - name: settled_at
+          - name: user_email
+          - name: user_kyc_status
+          - name: user_risk_score
+          - name: merchant_name
+          - name: merchant_category
+          - name: merchant_mcc_code
+          - name: merchant_risk_level
+          - name: txn_country
+          - name: txn_city
+          - name: txn_lat
+          - name: txn_lon
+          - name: is_online
+          - name: device_fingerprint
+          - name: device_type
+          - name: device_os
+          - name: device_is_trusted
+
+      - name: silver_user_profile
+        description: "User profiles with risk tier and account summary"
+        columns:
+          - name: user_id
+          - name: email
+          - name: kyc_status
+          - name: risk_score
+          - name: risk_tier
+          - name: account_count
+          - name: total_balance
+
+      - name: silver_merchant_profile
+        description: "Merchant profiles with risk level"
+        columns:
+          - name: merchant_id
+          - name: name
+          - name: category
+          - name: mcc_code
+          - name: risk_level
+          - name: is_active
+          - name: location_count
+
+      - name: silver_device_reputation
+        description: "Device reputation scores"
+        columns:
+          - name: device_id
+          - name: user_id
+          - name: device_fingerprint
+          - name: is_trusted
+          - name: risk_score
+
+      - name: mv_user_velocity_7d
+        description: "7-day user transaction velocity features"
+        columns:
+          - name: user_id
+          - name: txn_count_7d
+          - name: amount_sum_7d
+          - name: amount_avg_7d
+          - name: unique_merchants_7d
+          - name: unique_devices_7d
+          - name: unique_countries_7d
+
+      - name: mv_user_velocity_1h
+        description: "1-hour user transaction velocity"
+        columns:
+          - name: user_id
+          - name: txn_count_1h
+          - name: amount_sum_1h
+          - name: unique_merchants_1h
+
+      - name: mv_merchant_risk_realtime
+        description: "Real-time merchant risk features"
+        columns:
+          - name: merchant_id
+          - name: txn_count_1h
+          - name: volume_1h
+          - name: refund_rate_1h
+          - name: decline_rate_1h
+
+      - name: mv_device_risk_realtime
+        description: "Real-time device risk scores"
+        columns:
+          - name: device_id
+          - name: user_id
+          - name: is_trusted
+          - name: risk_score
+
+      - name: mv_transaction_risk_score
+        description: "Composite transaction risk scores"
+        columns:
+          - name: transaction_id
+          - name: user_id
+          - name: merchant_id
+          - name: device_id
+          - name: amount
+          - name: composite_risk_score
+          - name: risk_tier
