@@ -219,6 +219,9 @@ See [RESULTS.md](RESULTS.md) for full pipeline output: risk tier distribution, t
 ### Kafka UI — CDC Topics
 ![Kafka UI](docs/images/kafka-ui.png)
 
+### MinIO Object Storage
+![MinIO](docs/images/miniIO.png)
+
 ### RisingWave Materialized Views
 ![RisingWave Data](docs/images/risingwave-data.png)
 
