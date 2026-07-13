@@ -17,9 +17,9 @@ SELECT
     amount_sum_7d,
     amount_avg_7d,
     unique_devices_7d,
-    txn_count_1h,
-    amount_sum_1h,
-    refund_rate_1h,
-    decline_rate_1h,
+    txn_count_30d,
+    amount_sum_30d,
+    refund_rate_30d,
+    decline_rate_30d,
     user_kyc_status
 FROM risk_data

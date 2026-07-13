@@ -12,6 +12,8 @@ FinPay processes 50K+ transactions/day. The fraud team needs **sub-minute visibi
 - **dbt** models transform raw CDC → enriched fraud features with data quality tests
 - **FastAPI** serves features at <50ms for real-time ML scoring
 
+> **ML Integration:** The 25+ features served by the API (velocity, device reputation, merchant risk, composite score) are designed to feed an XGBoost/LightGBM fraud classifier. The `composite_risk_score` is a rule-based baseline; a trained ML model would replace this with learned feature weights.
+
 ---
 
 ## Architecture
@@ -140,7 +142,7 @@ docker run --rm --network finpay-fraud-cdc_datagate-net postgres:15-alpine psql 
 
 ### Gold Layer (Real-Time Fraud Features)
 - `mv_user_velocity_7d` - 7-day rolling transaction velocity per user
-- `mv_user_velocity_1h` - 30-day velocity (real-time alerts)
+- `mv_user_velocity_30d` - 30-day velocity per user (real-time alerts)
 - `mv_merchant_risk_realtime` - Merchant refund/decline rates (30-day window)
 - `mv_device_risk_realtime` - Device risk scoring
 - `mv_transaction_risk_score` - Composite risk score (0-100) per transaction

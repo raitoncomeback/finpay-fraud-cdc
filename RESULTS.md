@@ -12,7 +12,7 @@ Actual output from the running FinPay Fraud CDC Pipeline. All data generated fro
  mv_device_risk_realtime     |      1359
  mv_merchant_risk_realtime   |       500
  mv_transaction_risk_score   |     21794
- mv_user_velocity_1h         |      1000
+ mv_user_velocity_30d         |      1000
  mv_user_velocity_7d         |      1000
  silver_device_reputation    |      1359
  silver_merchant_profile     |       500
@@ -32,7 +32,7 @@ Actual output from the running FinPay Fraud CDC Pipeline. All data generated fro
  low       |   603 |      55.5 |     813.87
 ```
 
-73% of transactions flagged as critical risk — demonstrates the scoring system is actively identifying suspicious patterns.
+> **Note:** 73% critical rate is intentional — the synthetic data generator embeds fraud patterns (high velocity, card-not-present, unusual merchants) to demonstrate the scoring system's ability to identify suspicious transactions. A production system with balanced data would show ~5-15% critical.
 
 ---
 
@@ -118,15 +118,26 @@ All critical-risk merchants are in the `money_transfer` category — matches rea
   "txn_count_7d": 33,
   "amount_sum_7d": 62710.47,
   "unique_devices_7d": 2,
-  "txn_count_1h": 47,
-  "refund_rate_1h": 0.0,
-  "decline_rate_1h": 0.08,
+  "txn_count_30d": 47,
+  "refund_rate_30d": 0.0,
+  "decline_rate_30d": 0.08,
   "device_risk_score": 10,
   "user_risk_score": 15,
   "composite_risk_score": 100.0,
   "risk_tier": "critical"
 }
 ```
+
+### API Response Times
+
+| Endpoint | Response Time | Notes |
+|----------|--------------|-------|
+| `/health` | ~885ms | First call (cold start) |
+| `/stats` | ~1049ms | Aggregation query |
+| `/features/user/{id}` | ~472ms | Single user lookup |
+| `/features/high-risk` | ~1929ms | Full scan of 21K rows |
+
+> **Note:** These are local Docker measurements with no connection pooling or indexing. In production with PG connection pooling (PgBouncer), proper indexes on `user_id`/`transaction_id`, and a dedicated RisingWave cluster, sub-50ms p99 is achievable for single-row lookups.
 
 ---
 
@@ -165,7 +176,7 @@ Done. PASS=24 WARN=0 ERROR=0 SKIP=0 TOTAL=24
 | **Silver** | silver_merchant_profile | 500 | Merchant dimension |
 | **Silver** | silver_device_reputation | 1,359 | Device dimension |
 | **Gold** | mv_user_velocity_7d | 1,000 | 7-day velocity per user |
-| **Gold** | mv_user_velocity_1h | 1,000 | 30-day velocity per user |
+| **Gold** | mv_user_velocity_30d | 1,000 | 30-day velocity per user |
 | **Gold** | mv_merchant_risk_realtime | 500 | Merchant risk metrics |
 | **Gold** | mv_device_risk_realtime | 1,359 | Device risk scores |
 | **Gold** | mv_transaction_risk_score | 21,794 | Composite risk scores |

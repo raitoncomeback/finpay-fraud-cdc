@@ -30,7 +30,7 @@ GROUP BY user_id;
 -- GOLD: User Velocity Features (30-day rolling window)
 -- ============================================================
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS mv_user_velocity_1h AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_user_velocity_30d AS
 SELECT
     user_id,
     COUNT(*) AS txn_count_30d,
@@ -107,9 +107,9 @@ SELECT
     v7.amount_sum_7d,
     v7.amount_avg_7d,
     v7.unique_devices_7d,
-    v1.txn_count_30d AS txn_count_1h,
-    v1.amount_sum_30d AS amount_sum_1h,
-    v1.unique_merchants_30d AS unique_merchants_1h,
+    v30.txn_count_30d,
+    v30.amount_sum_30d,
+    v30.unique_merchants_30d,
 
     -- Merchant risk
     mr.refund_rate_30d AS refund_rate_1h,
@@ -124,7 +124,7 @@ SELECT
 
     -- Composite risk score (0-100)
     LEAST(100,
-        COALESCE(v1.txn_count_30d, 0) * 2 +
+        COALESCE(v30.txn_count_30d, 0) * 2 +
         COALESCE(mr.refund_rate_30d, 0) * 50 +
         COALESCE(mr.decline_rate_30d, 0) * 30 +
         COALESCE(dr.risk_score, 10) / 2 +
@@ -136,7 +136,7 @@ SELECT
     -- Risk tier
     CASE
         WHEN LEAST(100,
-            COALESCE(v1.txn_count_30d, 0) * 2 +
+            COALESCE(v30.txn_count_30d, 0) * 2 +
             COALESCE(mr.refund_rate_30d, 0) * 50 +
             COALESCE(mr.decline_rate_30d, 0) * 30 +
             COALESCE(dr.risk_score, 10) / 2 +
@@ -145,7 +145,7 @@ SELECT
             CASE WHEN NOT t.card_present THEN 5 ELSE 0 END
         ) >= 80 THEN 'critical'
         WHEN LEAST(100,
-            COALESCE(v1.txn_count_30d, 0) * 2 +
+            COALESCE(v30.txn_count_30d, 0) * 2 +
             COALESCE(mr.refund_rate_30d, 0) * 50 +
             COALESCE(mr.decline_rate_30d, 0) * 30 +
             COALESCE(dr.risk_score, 10) / 2 +
@@ -158,7 +158,7 @@ SELECT
 
 FROM silver_transactions_enriched t
 LEFT JOIN mv_user_velocity_7d v7 ON t.user_id = v7.user_id
-LEFT JOIN mv_user_velocity_1h v1 ON t.user_id = v1.user_id
+LEFT JOIN mv_user_velocity_30d v30 ON t.user_id = v30.user_id
 LEFT JOIN mv_merchant_risk_realtime mr ON t.merchant_id = mr.merchant_id
 LEFT JOIN mv_device_risk_realtime dr ON t.device_id = dr.device_id
 LEFT JOIN silver_user_profile u ON t.user_id = u.user_id

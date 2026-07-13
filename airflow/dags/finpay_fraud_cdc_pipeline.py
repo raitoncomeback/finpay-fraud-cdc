@@ -93,7 +93,7 @@ with DAG(
         psql -h risingwave -p 4566 -U root -d dev -c "
         SELECT name, 'running' as status
         FROM rw_materialized_views
-        WHERE name IN ('mv_user_velocity_1h', 'mv_user_velocity_7d', 'mv_user_geo_anomaly',
+        WHERE name IN ('mv_user_velocity_30d', 'mv_user_velocity_7d', 'mv_user_geo_anomaly',
                        'mv_merchant_risk_realtime', 'mv_device_risk_realtime',
                        'mv_transaction_risk_score');
         " || exit 1

@@ -83,7 +83,7 @@ sources:
           - name: unique_devices_7d
           - name: unique_countries_7d
 
-      - name: mv_user_velocity_1h
+      - name: mv_user_velocity_30d
         description: "1-hour user transaction velocity"
         columns:
           - name: user_id
