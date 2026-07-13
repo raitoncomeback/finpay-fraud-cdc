@@ -214,6 +214,7 @@ See [RESULTS.md](RESULTS.md) for full pipeline output: risk tier distribution, t
 
 ### FastAPI Swagger UI
 ![API Docs](docs/images/api-docs.png)
+![API Docs - Endpoints](docs/images/api-docs1.png)
 
 ### Kafka UI — CDC Topics
 ![Kafka UI](docs/images/kafka-ui.png)
