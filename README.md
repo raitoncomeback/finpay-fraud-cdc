@@ -229,7 +229,7 @@ See [RESULTS.md](RESULTS.md) for full pipeline output: risk tier distribution, t
 ![dbt Tests](docs/images/dbt-tests.png)
 
 ### Airflow DAGs
-![Airflow](docs/images/airflow-dags.png)
+![Airflow](docs/images/airflow-dag.png)
 
 ---
 
