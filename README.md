@@ -193,17 +193,6 @@ finpay-fraud-cdc/
 
 ---
 
-## Resume Bullet Points
-
-> **FinPay Fraud CDC Pipeline** — *Real-time fraud feature platform (50K txns/day)*
-> - Built CDC pipeline: Debezium (Postgres → Kafka) → RisingWave streaming SQL with 9 materialized views serving 25+ fraud features
-> - Engineered composite risk scoring: velocity (7d/1h rolling windows), device reputation, merchant risk — served at <50ms p99 via FastAPI
-> - Implemented medallion architecture with dbt: 11 ephemeral models with 24 data quality tests (unique, not_null, accepted_values)
-> - Orchestrated with Airflow: Bootstrap DAG, 5-min monitoring (CDC lag, data freshness), daily dbt run
-> - Zero cloud cost: Entire stack runs on Docker (Kafka KRaft, RisingWave, MinIO, PostgreSQL)
-
----
-
 ## License
 
 MIT License
